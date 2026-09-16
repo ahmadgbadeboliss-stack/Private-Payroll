@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  contract-and-app:
+    name: Compile · Test · Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Compact compiler
+        uses: midnightntwrk/setup-compact-action@v1
+        with:
+          compact-version: "0.31.1"
+
+      - name: Compile Compact contract
+        run: npm run compile
+
+      - name: Run tests (contract circuits)
+        run: npm test
+
+      - name: Typecheck & build frontend
+        run: npm run build
+
+      - name: Upload compiled contract artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: payroll-managed
+          path: contracts/managed/payroll
+          retention-days: 7
