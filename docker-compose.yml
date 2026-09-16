@@ -1,0 +1,10 @@
+# Local proof server for Midnight preview deployments (create-mn-app pattern).
+# The proof server generates the ZK proofs for wallet transactions; it runs
+# locally while the chain state lives on the preview network.
+services:
+  proof-server:
+    image: midnightnetwork/proof-server:3.0.3
+    container_name: private-payroll-proof-server
+    ports:
+      - "6300:6300"
+    command: ["serve"]
