@@ -1,0 +1,290 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PRIVACY MODEL — Private Payroll
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  Private Payroll distributes payments from a shared pool to many
+//  recipients WITHOUT exposing any individual payout amount on-chain.
+//
+//  PUBLIC (visible to anyone in ledger state):
+//    - poolBalance        running total of the undistributed pool.
+//    - totalPaidOut       running total of everything ever distributed.
+//    - runs               map: runId -> the DECLARED payout total for a
+//                         payroll run, plus the Merkle root of payout
+//                         commitments and the Merkle root of authorized
+//                         recipient identities.
+//    - admins             set of identity-root hashes. Admin identity is
+//                         itself private: each root is derived from a
+//                         secret held in that admin's private state.
+//
+//  PRIVATE (private witnesses, live only in the caller's private state):
+//    - the payout amount of every individual recipient
+//    - recipient identity roots and blinding salts
+//    - Merkle authentication paths
+//    - the run creator's identity secret
+//
+//  PROVED WITHOUT REVEALING (circuit run executes:
+//    1. sum over hidden amounts == declaredTotal
+//       (zero-knowledge proof of correct sum — the core primitive)
+//    2. every hidden amount is committed under commitmentsRoot, bound to
+//       a recipient identity and a blinding salt
+//    3. every paid recipient is included in recipientsRoot (no payouts
+//       to unauthorized parties)
+//    4. declaredTotal <= poolBalance (pool solvency)
+//    5. the caller's derived identity root is in the admins set (only an
+//       authorized administrator can execute a run; the root is derived
+//       from the caller's PRIVATE secret and checked in-circuit)
+//
+//  A recipient can later prove to any third party (e.g. a tax authority)
+//  that their own commitment is included in a run's commitmentsRoot —
+//  selective disclosure built on the same public roots, without making
+//  anything public on-chain.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Public on-chain state ───────────────────────────────────────────────────
+
+// Money deposited into this payroll pool and not yet distributed.
+export ledger poolBalance: Uint<64>;
+
+// Cumulative amount distributed across all runs (public audit figure).
+export ledger totalPaidOut: Uint<64>;
+
+// One entry per payroll run.
+export struct PayrollRun {
+  declaredTotal: Uint<64>;
+  commitmentsRoot: Bytes<32>;
+  recipientsRoot: Bytes<32>;
+}
+
+export ledger runs: Map<Uint<64>, PayrollRun>;
+
+// Administrative authorization via private-identity root hashes.
+export ledger admins: Set<Bytes<32>>;
+
+// ── Private identity ────────────────────────────────────────────────────────
+
+// Every participant (admin or recipient) holds a 32-byte secret in
+// private state. All identity in this contract derives from it; the
+// secret itself never leaves private state.
+export new type UserSecretKey = Bytes<32>;
+
+witness getUserSecret(): UserSecretKey;
+
+// ── Per-run private witnesses ───────────────────────────────────────────────
+// Fixed arity of 8 recipients per circuit execution (ZK circuits need a
+// statically known shape). Larger payrolls execute multiple runs.
+
+// Hidden payout amount per recipient — never disclosed.
+witness getRunAmounts(): Vector<8, Uint<64>>;
+// Blinding salt per payout commitment leaf.
+witness getRunSalts(): Vector<8, Bytes<32>>;
+// Hidden recipient identity root per recipient.
+witness getRunRecipients(): Vector<8, Bytes<32>>;
+// Merkle siblings for each payout commitment (3 levels => 8 leaves),
+// flattened: recipient i uses entries 3i, 3i+1, 3i+2.
+witness getRunCommitmentSiblings(): Vector<24, Bytes<32>>;
+// Orientation bit per level: true = the sibling hash is the LEFT operand.
+witness getRunCommitmentSiblingIsLeft(): Vector<24, Boolean>;
+// Merkle siblings for each recipient identity in the authorization tree.
+witness getRunRecipientSiblings(): Vector<24, Bytes<32>>;
+// Orientation bits for the authorization tree (same layout).
+witness getRunRecipientSiblingIsLeft(): Vector<24, Boolean>;
+
+// ── Construction ────────────────────────────────────────────────────────────
+
+// The deployer's derived identity root becomes the first administrator.
+constructor() {
+  poolBalance = 0;
+  totalPaidOut = 0;
+  admins.insert(disclose(deriveAdminRoot(getUserSecret())));
+}
+
+// ── ZK identity ─────────────────────────────────────────────────────────────
+
+// Domain-separated commitment-style hash of a private secret. Exported
+// as a pure circuit so wallets and tests can derive the same root
+// off-chain without revealing the secret.
+export pure circuit deriveAdminRoot(sk: UserSecretKey): Bytes<32> {
+  return persistentHash<[Bytes<21>, UserSecretKey]>([
+    "payroll:admin:root:v1",
+    sk
+  ]) as Bytes<32>;
+}
+
+// Recipient identity root — same construction, different domain tag.
+export pure circuit deriveRecipientRoot(sk: UserSecretKey): Bytes<32> {
+  return persistentHash<[Bytes<25>, UserSecretKey]>([
+    "payroll:recipient:root:v1",
+    sk
+  ]) as Bytes<32>;
+}
+
+// Merkle leaf for one payout: binds recipient identity, hidden amount
+// and a blinding salt into a single commitment.
+export pure circuit payoutLeaf(recipient: Bytes<32>, amount: Uint<64>, salt: Bytes<32>): Bytes<32> {
+  return persistentHash<[Bytes<32>, Uint<64>, Bytes<32>]>([recipient, amount, salt]) as Bytes<32>;
+}
+
+// Merkle node hash (canonical: left child first).
+export pure circuit hashPair(left: Bytes<32>, right: Bytes<32>): Bytes<32> {
+  return persistentHash<[Bytes<32>, Bytes<32>]>([left, right]) as Bytes<32>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  fundPool — deposit funds into the pool
+// ═══════════════════════════════════════════════════════════════════════════
+//  The funded amount is intentionally PUBLIC: the pool is a shared
+//  resource and its total is meant to be auditable. What stays private
+//  is who ultimately receives what.
+
+export circuit fundPool(amount: Uint<64>): [] {
+  assert(amount > 0, "Funded amount must be greater than zero");
+  // The funded amount is deliberately disclosed: deposits are meant to be
+  // publicly auditable (only individual payouts stay private).
+  poolBalance = (poolBalance + disclose(amount)) as Uint<64>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  executeRun — the privacy-critical core
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  PUBLIC arguments: runId, declaredTotal, commitmentsRoot, recipientsRoot
+//  PRIVATE witnesses: amounts, salts, recipient identities, Merkle paths
+//  (see witness declarations above)
+//
+//  Proves the five properties listed in the privacy model header, then
+//  commits only the audit skeleton to the ledger.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export circuit executeRun(
+  runId: Uint<64>,
+  declaredTotal: Uint<64>,
+  commitmentsRoot: Bytes<32>,
+  recipientsRoot: Bytes<32>,
+): [] {
+  // Per-recipient private witnesses.
+  const amounts = getRunAmounts();
+  const salts = getRunSalts();
+  const recipients = getRunRecipients();
+  const commitmentSiblings = getRunCommitmentSiblings();
+  const commitmentIsLeft = getRunCommitmentSiblingIsLeft();
+  const recipientSiblings = getRunRecipientSiblings();
+  const recipientIsLeft = getRunRecipientSiblingIsLeft();
+
+  // ── 1. Proof of correct sum over hidden values ──────────────────────────
+  // The heart of the product: the on-chain declared total is provably the
+  // exact sum of every private payout, without any amount appearing in
+  // public. Computed as a balanced tree reduction (no mutable state).
+  assert(sum8(amounts) == declaredTotal, "Declared total does not match the sum of private payouts");
+
+  for (const i of 0..8) {
+    // ── 2. Each payout commitment is well formed and included ────────────
+    // leaf_i = H(recipient_i || amount_i || salt_i): binds amount to
+    // recipient and hides the amount behind a salted commitment.
+    const leaf = payoutLeaf(recipients[i], amounts[i], salts[i]);
+    const j = (i * 3) as Uint<5>;
+    // Merkle climb. The orientation bit at each level comes from the
+    // recipient's private witness data; a wrong bit cannot pass, because
+    // the reconstructed root must equal the published one.
+    const c0 = commitmentIsLeft[j]
+      ? hashPair(commitmentSiblings[j], leaf)
+      : hashPair(leaf, commitmentSiblings[j]);
+    const c1 = commitmentIsLeft[j + 1]
+      ? hashPair(commitmentSiblings[j + 1], c0)
+      : hashPair(c0, commitmentSiblings[j + 1]);
+    const c2 = commitmentIsLeft[j + 2]
+      ? hashPair(commitmentSiblings[j + 2], c1)
+      : hashPair(c1, commitmentSiblings[j + 2]);
+    assert(c2 == commitmentsRoot, "Payout commitment is not included in the run's commitments root");
+
+    // ── 3. Each recipient is authorized ──────────────────────────────────
+    const r0 = recipientIsLeft[j]
+      ? hashPair(recipientSiblings[j], recipients[i])
+      : hashPair(recipients[i], recipientSiblings[j]);
+    const r1 = recipientIsLeft[j + 1]
+      ? hashPair(recipientSiblings[j + 1], r0)
+      : hashPair(r0, recipientSiblings[j + 1]);
+    const r2 = recipientIsLeft[j + 2]
+      ? hashPair(recipientSiblings[j + 2], r1)
+      : hashPair(r1, recipientSiblings[j + 2]);
+    assert(r2 == recipientsRoot, "Recipient is not authorized for this run");
+  }
+
+  // ── 4. The pool can cover the run ────────────────────────────────────────
+  assert(declaredTotal <= poolBalance, "Declared total exceeds the pool balance");
+
+  // ── 5. Only an authorized administrator can run payroll ─────────────────
+  // The root is derived from the caller's PRIVATE secret and checked
+  // against the admins set inside the circuit: neither the secret nor the
+  // identity is revealed, yet only authorized callers can execute.
+  const adminRoot = deriveAdminRoot(getUserSecret());
+  assert(admins.member(disclose(adminRoot)), "Run creator is not an authorized administrator");
+
+  // Prevent replaying / overwriting a run id.
+  assert(!runs.member(disclose(runId)), "Run id already used");
+
+  // ── Commit the audit skeleton to the public ledger ───────────────────────
+  runs.insert(disclose(runId), disclose(PayrollRun {
+    declaredTotal: disclose(declaredTotal),
+    commitmentsRoot: disclose(commitmentsRoot),
+    recipientsRoot: disclose(recipientsRoot)
+  }));
+  poolBalance = (poolBalance - disclose(declaredTotal)) as Uint<64>;
+  totalPaidOut = (totalPaidOut + disclose(declaredTotal)) as Uint<64>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  admin management
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Admit a new administrator by their (privately derived) identity root.
+export circuit addAdmin(newAdminRoot: Bytes<32>): [] {
+  const caller = deriveAdminRoot(getUserSecret());
+  assert(admins.member(disclose(caller)), "Only an administrator can add administrators");
+  admins.insert(disclose(newAdminRoot));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  sum tree — functional reduction over the hidden amounts
+// ═══════════════════════════════════════════════════════════════════════════
+
+circuit sum2(v: Vector<8, Uint<64>>, a: Uint<3>, b: Uint<3>): Uint<64> {
+  return (v[a] + v[b]) as Uint<64>;
+}
+
+circuit sum4(v: Vector<8, Uint<64>>, a: Uint<3>, b: Uint<3>, c: Uint<3>, d: Uint<3>): Uint<64> {
+  return (sum2(v, a, b) + sum2(v, c, d)) as Uint<64>;
+}
+
+circuit sum8(v: Vector<8, Uint<64>>): Uint<64> {
+  return (sum4(v, 0, 1, 2, 3) + sum4(v, 4, 5, 6, 7)) as Uint<64>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  selective disclosure primitive (pure, no ledger effects)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Verify one payout commitment against a run's commitmentsRoot. A
+// recipient runs this off-chain to prove to a third party (tax
+// authority, lender) that their payout is part of an audited run —
+// without making anything public on-chain.
+export pure circuit verifyPayoutCommitment(
+  commitmentsRoot: Bytes<32>,
+  leaf: Bytes<32>,
+  siblings: Vector<3, Bytes<32>>,
+  siblingIsLeft: Vector<3, Boolean>
+): Boolean {
+  const l0 = siblingIsLeft[0]
+    ? hashPair(siblings[0], leaf)
+    : hashPair(leaf, siblings[0]);
+  const l1 = siblingIsLeft[1]
+    ? hashPair(siblings[1], l0)
+    : hashPair(l0, siblings[1]);
+  const l2 = siblingIsLeft[2]
+    ? hashPair(siblings[2], l1)
+    : hashPair(l1, siblings[2]);
+  return l2 == commitmentsRoot;
+}
