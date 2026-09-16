@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+coverage/
+reports/
+.vite/
+
+# Generated contract assets copied into the Vite build
+public/
+
+# Generated contract artifacts (compact compile output; CI recompiles)
+contracts/managed/
+
+# Midnight local state (wallet seeds, deployment records, private state DBs)
+.midnight-state.json
+.midnight-wallet-state*
+private-state-db/
+*.midnight-seed
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+
+# Env files
+.env
+.env.*
