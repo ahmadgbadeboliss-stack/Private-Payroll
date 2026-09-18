@@ -15,7 +15,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "proof-server": "docker compose up -d",
     "proof-server:stop": "docker compose down",
-    "deploy:preview": "tsx scripts/deploy-preview.ts"
+    "deploy:preview": "tsx scripts/deploy-preview.ts",
+    "print-address": "tsx scripts/print-address.ts",
+    "generate-wallet": "tsx scripts/generate-wallet.ts",
+    "wallet:status": "tsx scripts/wallet-status.ts",
+    "dust:setup": "tsx scripts/dust-setup.ts",
+    "verify-contract": "tsx scripts/verify-contract.ts"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-runtime": "0.16.0",
@@ -26,6 +31,7 @@
     "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.1.1",
     "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.1.1",
     "@midnight-ntwrk/midnight-js-network-id": "4.1.1",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "^4.1.1",
     "@midnight-ntwrk/midnight-js-protocol": "4.1.1",
     "@midnight-ntwrk/midnight-js-types": "4.1.1",
     "@midnight-ntwrk/midnight-js-utils": "4.1.1",

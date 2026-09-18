@@ -13,11 +13,13 @@ _Preview demo URL — will be pasted here after the frontend is deployed._
 
 | Network | Address |
 |---------|---------|
-| Preview | _`PENDING DEPLOY` — will be pasted after `npm run deploy:preview`_ |
+| Midnight Preview | `0x4810fad0c34d8f454b1daf7d22e7dad1be6a6ecea7a61960d43ca9ef85666c04` |
 
 > Note: per the build brief, this MVP targets Midnight **preview** for wallet
-> and contract deployment (instead of preprod). The table and badge above will
-> be updated with the live address immediately after deployment.
+> and contract deployment (not preprod). The address above was deployed from
+> this repository and verified against the Preview indexer
+> (`https://indexer.preview.midnight.network`), which publicly serves the
+> contract's on-chain state.
 
 ## What This Product Does
 
@@ -126,8 +128,10 @@ npm run deploy:preview
 ```
 
 The script syncs the wallet, registers DUST, deploys the contract, and
-prints the **contract address** to paste into this README and to share with
-recipients ("Join existing…").
+prints the **contract address**. The address of the deployment made from
+this repository is recorded in the Contract Address table above; share it
+with recipients ("Join existing…"). A read-only check of any deployed
+address against the Preview indexer is available via `npm run verify-contract`.
 
 ## Run Tests
 
