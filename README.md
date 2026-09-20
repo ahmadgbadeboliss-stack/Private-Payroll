@@ -7,7 +7,13 @@
 
 ## Live Demo
 
-_Preview demo URL — will be pasted here after the frontend is deployed._
+**https://ahmadgbadeboliss-stack.github.io/Private-Payroll/**
+
+Deployed automatically from `main` by the
+[GitHub Pages workflow](https://github.com/ahmadgbadeboliss-stack/Private-Payroll/actions/workflows/pages.yml)
+(same compile → test → build pipeline as CI). The app connects to the Midnight
+**preview** network and the contract at the address below — viewing it requires
+the Midnight Lace browser extension.
 
 ## Contract Address
 
