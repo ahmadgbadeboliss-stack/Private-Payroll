@@ -96,7 +96,7 @@ a tax authority or lender via selective disclosure, without ever publishing it.
 ```bash
 # 1. clone and install
 git clone https://github.com/ahmadgbadeboliss-stack/Private-Payroll.git
-cd private-payroll
+cd Private-Payroll
 npm install
 
 # 2. compile the contract (on Windows, this uses WSL automatically)
