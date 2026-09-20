@@ -9,7 +9,12 @@ import wasm from "vite-plugin-wasm";
 // The Midnight runtime stack (onchain-runtime / ledger) ships as WASM, so we
 // enable the wasm + top-level-await plugins and split the WASM into its own
 // chunk, following the official Midnight examples.
+//
+// VITE_PUBLIC_BASE overrides the asset base path when the app is hosted in a
+// subdirectory (e.g. GitHub Pages serves it at /Private-Payroll/). Unset, it
+// stays "/" so local dev and `vite preview` behave exactly as before.
 export default defineConfig({
+  base: process.env.VITE_PUBLIC_BASE || "/",
   cacheDir: "./.vite",
   build: {
     target: "esnext",

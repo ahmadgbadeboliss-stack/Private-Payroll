@@ -88,7 +88,9 @@ async function buildProviders(logger: Logger): Promise<PayrollProviders> {
   setNetworkId(APP_CONFIG.networkId);
   const connector = await connectToWallet(logger);
   const zkConfigProvider = new FetchZkConfigProvider<PayrollCircuitKeys>(
-    window.location.origin,
+    // Respect the Vite base path so ZK artifacts resolve when the app is
+    // hosted in a subdirectory (e.g. GitHub Pages at /Private-Payroll/).
+    `${window.location.origin}${import.meta.env.BASE_URL}`,
     fetch.bind(window)
   );
   const config = await connector.getConfiguration();
