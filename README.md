@@ -177,7 +177,9 @@ guide (including a recipient's view and troubleshooting).
 
 ## Product X Profile
 
-_Placeholder — X profile link will be added after the account is created._
+**Official product X profile: [https://x.com/PrivatePayroll](https://x.com/PrivatePayroll)**
+
+Follow along for launch updates, privacy-model deep dives, and demo news.
 
 ## License
 
