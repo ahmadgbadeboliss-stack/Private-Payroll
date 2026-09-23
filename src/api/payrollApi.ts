@@ -83,10 +83,60 @@ export type PayrollAPI = {
 // Minimal structural type for the pino-style logger we pass around.
 export type Logger = { info(o: unknown, m?: string): void; error(o: unknown, m?: string): void };
 
+// The Lace extension's background worker can be recycled at any moment (idle
+// timeout, browser restart, extension update) while the page still holds the
+// connection handle. Every further wallet call then fails with
+// RemoteApiShutdownError ("Remote API with channel 'midnight-wallet' was
+// shutdown") and the page cannot recover by itself. We keep the live handle
+// here so a dead channel can be detected and transparently replaced.
+let activeConnector: ConnectedAPI | null = null;
+
+/** True when an error means the wallet extension channel has died. */
+export function isWalletChannelDead(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("RemoteApiShutdownError") || message.includes("was shutdown");
+}
+
+/** Run a wallet call, reconnecting once if the extension channel died. */
+async function withWalletReconnect<T>(
+  logger: Logger,
+  call: (connector: ConnectedAPI) => Promise<T>
+): Promise<T> {
+  try {
+    if (!activeConnector) throw new Error("Wallet is not connected.");
+    return await call(activeConnector);
+  } catch (err) {
+    if (!isWalletChannelDead(err)) throw err;
+    logger.info({}, "wallet channel died — reconnecting and retrying once");
+    let fresh: ConnectedAPI;
+    try {
+      fresh = await connectToWallet(logger);
+    } catch (reconnectErr) {
+      throw new Error(
+        "The Lace wallet connection was lost and reconnection failed. Reload the page, unlock Lace, make sure it is set to preview, then connect again.",
+        { cause: reconnectErr }
+      );
+    }
+    activeConnector = fresh;
+    try {
+      return await call(fresh);
+    } catch (retryErr) {
+      if (isWalletChannelDead(retryErr)) {
+        throw new Error(
+          "The Lace wallet connection dropped again right after reconnecting. Reload the page and try the transaction once more; if it persists, restart the browser (this recycles the extension's background worker).",
+          { cause: retryErr }
+        );
+      }
+      throw retryErr;
+    }
+  }
+}
+
 /** Build the wallet-facing providers (bboard pattern). */
 async function buildProviders(logger: Logger): Promise<PayrollProviders> {
   setNetworkId(APP_CONFIG.networkId);
   const connector = await connectToWallet(logger);
+  activeConnector = connector;
   const zkConfigProvider = new FetchZkConfigProvider<PayrollCircuitKeys>(
     // Respect the Vite base path so ZK artifacts resolve when the app is
     // hosted in a subdirectory (e.g. GitHub Pages at /Private-Payroll/).
@@ -111,7 +161,9 @@ async function buildProviders(logger: Logger): Promise<PayrollProviders> {
       balanceTx: async (tx: UnboundTransaction, ttl?: Date): Promise<FinalizedTransaction> => {
         void ttl;
         const serialized = toHex(tx.serialize());
-        const received = await connector.balanceUnsealedTransaction(serialized);
+        const received = await withWalletReconnect(logger, (connector) =>
+          connector.balanceUnsealedTransaction(serialized)
+        );
         return Transaction.deserialize<SignatureEnabled, Proof, Binding>(
           "signature",
           "proof",
@@ -122,7 +174,9 @@ async function buildProviders(logger: Logger): Promise<PayrollProviders> {
     },
     midnightProvider: {
       submitTx: async (tx: FinalizedTransaction): Promise<TransactionId> => {
-        await connector.submitTransaction(toHex(tx.serialize()));
+        await withWalletReconnect(logger, (connector) =>
+          connector.submitTransaction(toHex(tx.serialize()))
+        );
         return tx.identifiers()[0];
       }
     }
@@ -138,10 +192,10 @@ async function connectToWallet(logger: Logger): Promise<ConnectedAPI> {
       filter((w): w is InitialAPI => !!w),
       take(1),
       timeout({
-        first: 2_000,
+        first: 10_000,
         with: () =>
           throwError(
-            () => new Error("Midnight Lace wallet not found. Is the extension installed and enabled?")
+            () => new Error("Midnight Lace wallet not found. Is the extension installed, enabled for this site, and unlocked?")
           )
       }),
       concatMap(async (initial) => {
@@ -151,8 +205,16 @@ async function connectToWallet(logger: Logger): Promise<ConnectedAPI> {
         return connected;
       }),
       timeout({
-        first: 8_000,
-        with: () => throwError(() => new Error("Wallet did not respond to the connection request."))
+        // Generous on purpose: the user may need to unlock Lace, switch it
+        // to preview, or find the approval popup before confirming.
+        first: 60_000,
+        with: () =>
+          throwError(
+            () =>
+              new Error(
+                "Wallet did not respond to the connection request. Check the Lace popup — approve the connection, make sure Lace is unlocked and set to preview, then try again."
+              )
+          )
       }),
       catchError((err) => throwError(() => (err instanceof Error ? err : new Error(String(err)))))
     )
